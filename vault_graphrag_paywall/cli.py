@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from .graphrag_engine import GraphRAGEngine, MASTER_REASONING_PROMPT
 from .homelab_silo import HomelabSiloProvisioner
+from .trajectory_importer import AtomicTrajectoryGraphImporter
 from .vault_indexer import ObsidianVaultIndexer
 from .vending_paywall import VendingMachinePaywall
 
@@ -90,7 +91,54 @@ def build_parser() -> argparse.ArgumentParser:
         "--web-port", type=int, default=3001, help="Dedicated Web port inside silo"
     )
 
-    # 5. demo
+    # 5. import-trajectory (Single-session Atomic Multi-Note Graph importer)
+    imp_p = subparsers.add_parser(
+        "import-trajectory",
+        help="Import a single agent trajectory (conversation://<id> or transcript.jsonl) as an Atomic Multi-Note Graph with deterministic redaction and SHA-256 provenance",
+    )
+    imp_p.add_argument(
+        "target",
+        type=str,
+        help="Conversation ID (e.g. conversation://17f798b0-...) or path to transcript.jsonl",
+    )
+    imp_p.add_argument(
+        "--vault-dir",
+        type=str,
+        default=None,
+        help="Optional Obsidian Vault directory to write atomic Markdown notes into",
+    )
+    imp_p.add_argument(
+        "--query",
+        type=str,
+        default=None,
+        help="Optional immediate $0.05 metered GraphRAG query to run against the imported trajectory",
+    )
+
+    # 6. import-trajectories (Batch Brain Scanner)
+    batch_p = subparsers.add_parser(
+        "import-trajectories",
+        help="Batch-scan ~/.gemini/antigravity-cli/brain/* and import recent trajectories into the Obsidian Vault GraphRAG index",
+    )
+    batch_p.add_argument(
+        "--brain-root",
+        type=str,
+        default=None,
+        help="Path to brain root directory (defaults to ~/.gemini/antigravity-cli/brain)",
+    )
+    batch_p.add_argument(
+        "--vault-dir",
+        type=str,
+        default=None,
+        help="Optional Obsidian Vault directory to write atomic Markdown notes into",
+    )
+    batch_p.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="Maximum number of recent conversations to import",
+    )
+
+    # 7. demo
     subparsers.add_parser(
         "demo",
         help="Run an end-to-end JSON demonstration of vault indexing, token minting, GraphRAG query, and homelab VM silo provisioning",
@@ -202,6 +250,42 @@ def main(argv: Optional[List[str]] = None) -> int:
             "hardware_summary": provisioner.get_hardware_summary(),
         }
         print(json.dumps(output, indent=2))
+        return 0
+
+    if args.command == "import-trajectory":
+        indexer = ObsidianVaultIndexer.from_seed_vault()
+        importer = AtomicTrajectoryGraphImporter(indexer=indexer)
+        imported = importer.import_trajectory(
+            args.target, vault_dir=args.vault_dir
+        )
+        payload: Dict[str, Any] = {
+            "imported_trajectory": imported.to_dict(),
+            "vault_stats": indexer.get_graph()["stats"],
+        }
+        if args.query:
+            paywall = VendingMachinePaywall(price_per_query_usd=0.05)
+            paywall.mint_tokens(wallet_id="trajectory-client", usd_amount=0.25)
+            engine = GraphRAGEngine(indexer=indexer, paywall=paywall)
+            payload["metered_query_result"] = engine.query(
+                wallet_id="trajectory-client", query_text=args.query, max_hops=2
+            )
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    if args.command == "import-trajectories":
+        indexer = ObsidianVaultIndexer.from_seed_vault()
+        importer = AtomicTrajectoryGraphImporter(indexer=indexer)
+        batch = importer.import_all_recent(
+            brain_root=args.brain_root,
+            vault_dir=args.vault_dir,
+            limit=args.limit,
+        )
+        payload = {
+            "imported_count": len(batch),
+            "trajectories": [b.to_dict() for b in batch],
+            "vault_stats": indexer.get_graph()["stats"],
+        }
+        print(json.dumps(payload, indent=2))
         return 0
 
     if args.command == "demo":

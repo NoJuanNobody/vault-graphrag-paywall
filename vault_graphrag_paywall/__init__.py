@@ -21,6 +21,11 @@ from .homelab_silo import (
     HomelabSiloProvisioner,
     VMSiloSpec,
 )
+from .trajectory_importer import (
+    AtomicTrajectoryGraphImporter,
+    ImportedTrajectoryGraph,
+    TrajectorySanitizer,
+)
 
 __all__ = [
     "ARTCRAFT_APPS",
@@ -36,4 +41,7 @@ __all__ = [
     "GraphRAGEngine",
     "VMSiloSpec",
     "HomelabSiloProvisioner",
+    "TrajectorySanitizer",
+    "ImportedTrajectoryGraph",
+    "AtomicTrajectoryGraphImporter",
 ]

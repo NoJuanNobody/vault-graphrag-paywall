@@ -14,10 +14,12 @@ from vault_graphrag_paywall import (
     ARTCRAFT_APPS,
     DEFAULT_PRICE_PER_QUERY_USD,
     MASTER_REASONING_PROMPT,
+    AtomicTrajectoryGraphImporter,
     GraphRAGEngine,
     HomelabSiloProvisioner,
     InsufficientBalanceError,
     ObsidianVaultIndexer,
+    TrajectorySanitizer,
     VendingMachinePaywall,
 )
 from vault_graphrag_paywall.cli import main as cli_main
@@ -198,3 +200,137 @@ def test_cli_subcommands_execution(capsys: pytest.CaptureFixture[str]) -> None:
     out_silo = json.loads(capsys.readouterr().out)
     assert out_silo["vm_silo_spec"]["business_id"] == "tenant-x"
     assert out_silo["vm_silo_spec"]["api_port"] == 8001
+
+
+def test_trajectory_sanitizer_redaction_and_provenance() -> None:
+    sample_records = [
+        {
+            "step_index": 1,
+            "source": "USER_EXPLICIT",
+            "type": "USER_INPUT",
+            "content": "Build repo in /Users/alejandrolondono/dev/research-ecosystem with key ghp_1234567890abcdefghijklmnopqrstuv",
+        },
+        {
+            "step_index": 2,
+            "source": "MODEL",
+            "type": "PLANNER_RESPONSE",
+            "content": "Implementing Paper 01 and VectorCraft in /Users/alejandrolondono/dev/research-ecosystem",
+            "tool_calls": [
+                {
+                    "name": "write_file",
+                    "args": {"Path": "/Users/alejandrolondono/dev/research-ecosystem/README.md"},
+                }
+            ],
+        },
+    ]
+    sanitized, sha256_hash = TrajectorySanitizer.sanitize_records(sample_records)
+    assert len(sha256_hash) == 64
+    assert "/Users/alejandrolondono" not in sanitized[0]["content"]
+    assert "~/dev/research-ecosystem" in sanitized[0]["content"]
+    assert "[REDACTED_GITHUB_TOKEN]" in sanitized[0]["content"]
+    assert sanitized[1]["tool_calls"][0]["args"]["Path"] == "~/dev/research-ecosystem/README.md"
+
+
+def test_atomic_multi_note_trajectory_import_and_flat_005_query(tmp_path: Path) -> None:
+    conv_id = "17f798b0-23d1-4a59-b8b6-db9226fd9023"
+    logs_dir = tmp_path / "brain" / conv_id / ".system_generated" / "logs"
+    logs_dir.mkdir(parents=True)
+    transcript_file = logs_dir / "transcript_full.jsonl"
+
+    records = [
+        {
+            "step_index": 1,
+            "source": "USER_EXPLICIT",
+            "type": "USER_INPUT",
+            "content": "Implement research-ecosystem 36 research papers including Paper 01, Paper 13, Paper 25, VectorCraft, and CadCraft",
+        },
+        {
+            "step_index": 2,
+            "source": "MODEL",
+            "type": "PLANNER_RESPONSE",
+            "content": "Scaffolding Rust crates and Solidity contracts for Paper 01 and Paper 25 in /Users/alejandrolondono/dev/research-ecosystem",
+            "tool_calls": [
+                {"name": "write_file", "args": {"Path": "/Users/alejandrolondono/dev/research-ecosystem/Cargo.toml"}},
+                {"name": "write_file", "args": {"Path": "/Users/alejandrolondono/dev/research-ecosystem/contracts/ProofOfAttribution.sol"}},
+                {"name": "write_file", "args": {"Path": "/Users/alejandrolondono/dev/research-ecosystem/packages/motion_engine/src/index.ts"}},
+                {"name": "run_command", "args": {"CommandLine": "cargo test --workspace"}},
+            ],
+        },
+    ]
+    transcript_file.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    vault_out = tmp_path / "obsidian_vault"
+    indexer = ObsidianVaultIndexer.from_seed_vault()
+    importer = AtomicTrajectoryGraphImporter(indexer=indexer)
+
+    imported = importer.import_trajectory(
+        f"conversation://{conv_id}",
+        vault_dir=str(vault_out),
+        brain_root=str(tmp_path / "brain"),
+    )
+
+    assert imported.parent_note_id == "Trajectory-17f798b0"
+    assert len(imported.child_note_ids) >= 1
+    assert "PAPER-01" in imported.detected_papers
+    assert "PAPER-25" in imported.detected_papers
+    assert "VectorCraft" in imported.detected_craft_apps
+    assert "CadCraft" in imported.detected_craft_apps
+    assert "research-ecosystem" in imported.detected_skills
+    assert len(imported.written_files) == 1 + len(imported.child_note_ids)
+
+    # Query the imported trajectory through GraphRAGEngine at the flat $0.05 printing price
+    paywall = VendingMachinePaywall(price_per_query_usd=0.05)
+    paywall.mint_tokens("agent-buyer", usd_amount=0.10)
+    engine = GraphRAGEngine(indexer=indexer, paywall=paywall)
+
+    res = engine.query("agent-buyer", "Trajectory-17f798b0 research-ecosystem Paper 01 ProofOfAttribution", max_hops=2)
+    assert res["receipt"]["cost_usd"] == 0.05
+    assert res["receipt"]["pricing_tier"] == "printing_prices_$0.05"
+    assert res["remaining_balance_usd"] == 0.05
+    assert any("Trajectory-17f798b0" in title for title in res["taxonomy_summary"]["note_titles"])
+
+
+def test_cli_import_trajectory_and_batch_scanner(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    conv_id = "abcdef12-3456-7890-abcd-ef1234567890"
+    logs_dir = tmp_path / "brain" / conv_id / ".system_generated" / "logs"
+    logs_dir.mkdir(parents=True)
+    transcript_file = logs_dir / "transcript_full.jsonl"
+    transcript_file.write_text(
+        json.dumps(
+            {
+                "step_index": 1,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "content": "Build tmux-agent-fleet and Paper 15 with DesignCraft",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    rc_single = cli_main(
+        [
+            "import-trajectory",
+            str(transcript_file),
+            "--query",
+            "Trajectory-abcdef12 tmux-agent-fleet Paper 15",
+        ]
+    )
+    assert rc_single == 0
+    out_single = json.loads(capsys.readouterr().out)
+    assert out_single["imported_trajectory"]["parent_note_id"] == "Trajectory-abcdef12"
+    assert out_single["metered_query_result"]["receipt"]["cost_usd"] == 0.05
+
+    rc_batch = cli_main(
+        [
+            "import-trajectories",
+            "--brain-root",
+            str(tmp_path / "brain"),
+            "--limit",
+            "5",
+        ]
+    )
+    assert rc_batch == 0
+    out_batch = json.loads(capsys.readouterr().out)
+    assert out_batch["imported_count"] == 1
+
