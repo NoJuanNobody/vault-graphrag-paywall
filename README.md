@@ -1,6 +1,19 @@
 # `vault-graphrag-paywall`
 
-**Cloud & Homelab Obsidian Vault GraphRAG Synthesis Engine with a Stablecoin Tokenized "Vending Machine" API Paywall ($0.05 "Printing Prices") & Per-Business Siloed VM + Docker Architecture.**
+**A local Python prototype of pay-per-query search over Obsidian notes, for developers exploring metered knowledge-graph APIs:** fund a wallet, ask a question, get back the linked notes plus a signed $0.05 receipt. Payments, homelab VMs and "AI synthesis" are modelled in code, not live.
+
+[![Explainer video poster](docs/explainer/poster.png)](https://nojuannobody.github.io/vault-graphrag-paywall/explainer/explainer.mp4)
+
+[▶ Watch the 72-second explainer](https://nojuannobody.github.io/vault-graphrag-paywall/explainer/explainer.mp4) · [Read the one-page explainer](https://nojuannobody.github.io/vault-graphrag-paywall/explainer/)
+
+### How it works for you
+
+1. `pip install -e .` — no API keys, no network, no dependencies beyond Python 3.9+.
+2. `vault-paywall index` builds a graph from note `[[wikilinks]]` (the built-in seed vault has 18 notes and 67 links; `--vault-dir` indexes your own folder).
+3. Fund a wallet: `$0.50` mints 10 tokens at `$0.05` per query. The balance lives in memory only.
+4. `vault-paywall query --query "..."` charges `$0.05` first (an empty wallet is refused), then finds notes that share the question's words and follows links up to `--hops` away.
+5. You get the matching notes, a templated summary, and an HMAC-SHA256 receipt that `verify_receipt` can check.
+6. Optional: `homelab-spec` prints a per-business VM spec and Docker Compose file as text; it does not create anything.
 
 ---
 
@@ -21,6 +34,8 @@ pip install -e .
 ---
 
 ## Architecture Overview
+
+> The diagram shows the intended design. In the current code the wallet, stablecoin deposit and VM silos are simulated in memory or emitted as text; nothing is charged, deployed or served over HTTP.
 
 ```mermaid
 flowchart TD
@@ -67,20 +82,20 @@ flowchart TD
 ## Key Capabilities
 
 ### 1. Obsidian Vault GraphRAG Indexer (`vault_indexer.py`)
-- Indexes Markdown files across an Obsidian Vault directory tree or loads the built-in multi-disciplinary seed vault representing **~200+ notes/papers**, **36 research papers**, **15 ArtCraft apps** (`VectorCraft`, `Photocraft`, `LightCraft`, `DesignCraft`, `FilmCraft`, `EffectCraft`, `SoundCraft`, `CadCraft`, `FigCraft`, `DeckCraft`, `GridCraft`, `WordCraft`, `PdfCraft`, `ScriptCraft`, `InkDraw`), **Graphic Engineering loops**, **Architectural Design Thinking**, **3D/PCB Hardware Fabrication**, and **Quantum Orch-OR Consciousness**.
+- Indexes Markdown files across an Obsidian Vault directory tree or loads the built-in seed vault: **18 notes** tagged with **36 placeholder paper IDs** (`PAPER-01`…`PAPER-36`) and the **15 ArtCraft app names** (`VectorCraft`, `Photocraft`, `LightCraft`, `DesignCraft`, `FilmCraft`, `EffectCraft`, `SoundCraft`, `CadCraft`, `FigCraft`, `DeckCraft`, `GridCraft`, `WordCraft`, `PdfCraft`, `ScriptCraft`, `InkDraw`), **Graphic Engineering loops**, **Architectural Design Thinking**, **3D/PCB Hardware Fabrication**, and **Quantum Orch-OR Consciousness**.
 - Extracts YAML frontmatter (`domain`, `papers`, `craft_app`), `#tags`, and `[[wikilinks]]` to construct an entity-relationship adjacency graph (`nodes` and `edges`).
 
 ### 2. Stablecoin "Vending Machine" API Paywall (`vending_paywall.py`)
-- Implements a pre-funded stablecoin token ledger where `$1.00 USD` mints `20` query tokens at **$0.05 per query ("printing prices")**.
+- Implements an in-memory (simulated) prepaid ledger — no stablecoin, blockchain or payment-provider integration — where `$1.00 USD` mints `20` query tokens at **$0.05 per query ("printing prices")**.
 - Generates tamper-evident **HMAC-SHA256 receipts** for every metered query and enforces strict balance checks (`InsufficientBalanceError`).
 
 ### 3. Multi-Disciplinary GraphRAG Synthesis Engine (`graphrag_engine.py`)
-- Combines multi-hop graph traversal (`max_hops=2`) with the **Master Multi-Disciplinary Reasoning Prompt**:
+- Combines keyword seed matching and multi-hop graph traversal (`max_hops=2`) with the **Master Multi-Disciplinary Reasoning Prompt**. The prompt is included in the output as text; no language model is called, and the "synthesis" is a fixed template filled with the retrieved notes:
   > *"Act as an advanced multi-disciplinary reasoning engine specializing in the convergence of creative systems, architectural design thinking, computational frameworks, and physical fabrication pipelines. Analyze the provided domain queries by utilizing the established lexicographical taxonomy, integrating visual resource references, executing incremental GraphRAG synthesis across craft app subdomains, and employing graphic engineering loops and hardware fabrication logic to ensure precise execution for automated synthesis."*
 
 ### 4. Homelab Per-Business Siloed VM + Docker Provisioner (`homelab_silo.py`)
-- Models a **~$130 Mini PC** (4 vCPU, 16GB RAM) paired with a **10TB external hard drive** (`10,000 GB`).
-- Provisions dedicated KVM/Proxmox Virtual Machines (`VMSiloSpec`) per business tenant with isolated VLAN tags, dedicated storage slices on the 10TB drive, and nested Docker Compose stacks (`API_PORT=8001`, `WEB_PORT=3001`).
+- Models a **~$130 Mini PC** (defaults: 8 vCPU, 16GB RAM) paired with a **10TB external hard drive** (`10,000 GB`).
+- Generates (as data and YAML text, without creating anything) dedicated KVM/Proxmox Virtual Machine specs (`VMSiloSpec`) per business tenant with isolated VLAN tags, dedicated storage slices on the 10TB drive, and nested Docker Compose stacks (`API_PORT=8001`, `WEB_PORT=3001`).
 
 ---
 
@@ -94,10 +109,11 @@ vault-paywall demo
 vault-paywall index
 
 # Mint $0.50 USD (10 queries at $0.05/query) for a wallet
+# (wallets are in-memory: this balance is gone when the command exits)
 vault-paywall vending-mint --wallet studio-alpha --usd 0.50
 
-# Execute a metered GraphRAG query ($0.05 deducted)
-vault-paywall query --wallet studio-alpha --query "CadCraft PCB fabrication and Graphic Engineering loops" --hops 2
+# Execute a metered GraphRAG query ($0.05 deducted); --usd funds the wallet in the same run (default 0.50)
+vault-paywall query --wallet studio-alpha --usd 0.50 --query "CadCraft PCB fabrication and Graphic Engineering loops" --hops 2
 
 # Output Homelab VM Silo spec and nested Docker Compose YAML
 vault-paywall homelab-spec --business-id studio-alpha --storage-gb 500 --port 8001
